@@ -37,3 +37,4 @@ There is still some mixed python syntax in the code from all the copy and pastin
 
 The number of command line arguments are getting long, so a JSON config file parser might be worth while to save settings.
 This could also allow more customizations where the HA discovery packets can have specific device names defined in the config file
+Eventually this should run as a background task as part of a HA add-on, this needs a docker container which has implications on USB pass through and also USB access like that mentioned above. It might not be possible to make all the system changes from HA.
