@@ -22,7 +22,26 @@ The script needs to know at a minimum the MQTT broker address, username, and pas
 
     sudo python3 ./ws3000mqtt.py --host mqtt.local --user mqtt_client --password manysecrets
 
+or
+
+    # set MQTT vars
+    MQTT_BROKER_HOST  = "core-mosquitto"
+    MQTT_BROKER_PORT  = 1883
+    MQTT_CLIENT_ID    = "WS3000_Sensor"
+    MQTT_USERNAME     = ""
+    MQTT_PASSWORD     = ""
+
 The "--test driver" argument is useful to test the USB connection without starting MQTT. It will try to find the WS-3000 base station over USB and print data to screen at the default (or custom) interval.
+
+## MQTT broker troubleshooting
+
+The MQTT client has a prefix of home/ws-3000. This can be changed in the code with the MQTT_TOPIC variable, it "should" apply to the HA discovery messages.
+
+Assuming you run HAOS with add-ons available and a Mosquitto broker add-on, watch/refresh the log to see the MQTT client connect to the broker. The mosquitto add-on shows a hostname "core-mosquitto" and this was not useful since it is inside a docker container. Either specify the IP address or hostname for the HAOS machine. If the the user/password is incorrect, the log will show access denied.
+
+Another debug tool is to use the MQTT-Explorer: https://github.com/thomasnordquist/MQTT-Explorer/releases
+
+This tool allows you to test login to the broker and watch messages update. It also shows the discovery configs that HA receives.
 
 ## HA Discovery
 
