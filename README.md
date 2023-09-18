@@ -2,13 +2,13 @@
 
 ## Description
 
-This python script collects data from an Ambient Weather WS-3000 base station over USB and publish up to 8 temperatures and humidity over MQTT. Much of the code is a combination from the following sources:
+This python script collects data from an [Ambient Weather WS-3000](https://ambientweather.com/amws3000x3.html) base station over USB and publish up to 8 temperatures and humidity over MQTT. Much of the code is a combination from the following sources:
 
-https://github.com/matthewwall/weewx-hp3000
-https://github.com/hublol/ws3000-weewx
-https://austinsnerdythings.com/2021/03/20/handling-data-from-ambient-weather-ws-2902c-to-mqtt/
-https://stevessmarthomeguide.com/adding-an-mqtt-device-to-home-assistant/
-https://www.home-assistant.io/integrations/sensor.mqtt/
+- https://github.com/matthewwall/weewx-hp3000
+- https://github.com/hublol/ws3000-weewx
+- https://austinsnerdythings.com/2021/03/20/handling-data-from-ambient-weather-ws-2902c-to-mqtt/
+- https://stevessmarthomeguide.com/adding-an-mqtt-device-to-home-assistant/
+- https://www.home-assistant.io/integrations/sensor.mqtt/
 
 ## Usage
 
