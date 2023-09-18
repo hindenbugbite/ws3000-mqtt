@@ -106,7 +106,7 @@ current data (27 bytes)
 Change log:
 
 v0.1 - Initial release, syntax updated to Python 3
-
+v0.2 - changed the availability to match will, single availability for all sensors
 <...>
 
 """
@@ -122,7 +122,7 @@ import json
 import usb
 import paho.mqtt.client as mqtt
 
-DRIVER_VERSION = "0.1"
+DRIVER_VERSION = "0.2"
 
 # set MQTT vars
 MQTT_BROKER_HOST  = "core-mosquitto"
@@ -180,7 +180,7 @@ client = mqtt.Client(client_id=MQTT_CLIENT_ID)
 if MQTT_USERNAME and MQTT_PASSWORD:
     client.username_pw_set(MQTT_USERNAME,MQTT_PASSWORD)
     print("Username and password set.")
-client.will_set(MQTT_TOPIC_PREFIX+"/status", payload="Offline", qos=1, retain=True) # set LWT     
+client.will_set(MQTT_TOPIC_PREFIX+"/status", payload="offline", qos=2, retain=True) # set LWT     
 client.on_connect = on_connect # on connect callback
 client.on_disconnect = on_disconnect # on disconnect callback
 
@@ -540,7 +540,7 @@ def publish_HAdiscovery(data):
             "unique_id": f"ws3000_temp_ch{ch}",
             "name": f"Temperature Sensor {ch}",
             "state_topic": MQTT_TOPIC + f"/temperature_CH{ch}",
-            "availability_topic": MQTT_TOPIC + f"/temperature_CH{ch}/available",
+            "availability_topic": MQTT_TOPIC_PREFIX + "/status",
             "expire_after":"3600",
             "suggested_display_precision": 1,
             "unit_of_measurement": f"°{data['units']}"
@@ -549,7 +549,7 @@ def publish_HAdiscovery(data):
             "unique_id": f"ws3000_hum_ch{ch}",
             "name": f"Humidity Sensor {ch}",
             "state_topic": MQTT_TOPIC + f"/humidity_CH{ch}",
-            "availability_topic": MQTT_TOPIC + f"/humidity_CH{ch}/available",
+            "availability_topic": MQTT_TOPIC_PREFIX + "/status",
             "expire_after":"3600",
             "unit_of_measurement": "%",
             "icon": "mdi:water-percent"
@@ -566,11 +566,9 @@ def publish_HAdiscovery(data):
         result = client.publish(specific_topic, msg, qos=0, retain=True)
 
         # make sensors available
-        msg = 'Online'
+        msg = 'online'
         specific_topic = payloadT['availability_topic']
-        result = client.publish(specific_topic, msg, qos=0, retain=True)
-        specific_topic = payloadH['availability_topic']
-        result = client.publish(specific_topic, msg, qos=0, retain=True)
+        result = client.publish(specific_topic, msg, qos=2, retain=True)
 
 # *******************************************************************
 #
