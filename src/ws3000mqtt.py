@@ -9,26 +9,16 @@ in fact, since a lot of material has been directly reused:
 From Matthew Wall:
   https://github.com/matthewwall/weewx-hp3000
 
-From Tom Keffer, the WMR100 driver for weewx
-  http://www.weewx.com
+From Hublol, the USB driver for connecting WS-3000 to weewx
+  https://github.com/hublol/ws3000-weewx
 
-Many thanks to the following contributers:
-- RistoK for helping with troubleshooting and testing on RPi
+Example for MQTT client in python
+  https://austinsnerdythings.com/2021/03/20/handling-data-from-ambient-weather-ws-2902c-to-mqtt/
 
-NOTE: the HP3000 driver developed by Matthew Wall should also be working
-for the WS-3000 station. But various issues led me to rewrite a new driver
-on the model of the one for the WMR100. One benefit is that this driver will
-work with the "default" version of weewx and doesn't require the usb branch.
+Example for HA discovery protocol
+  https://stevessmarthomeguide.com/adding-an-mqtt-device-to-home-assistant/
 
-NOTE: since the station doesn't distinguish between loop and archive packets,
-only genLoopPackets is implemented. It doesn't make sense to implement the other
-AbstractDevice methods such as genArchiveRecords.
-As a result, weewx should be configured with record_generation = software
-
-NOTE: it seems that when packets are generated (data is fetch from the console) too quickly, errors can
-occur, causing the station to 'hang' and potentially crashing weewx (error handling in this
-driver is not the best!). Make sure that the loop interval is large enough to avoid any
-potential issue.
+The notes below are directly from hublol: 
 
 NOTE for Raspberry Pi: if the usb read/write timeout is too small (100ms), errors
 might occur when sending/fetching data from the console. It has been increased to 1000 by default,
