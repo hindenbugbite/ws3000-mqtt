@@ -132,9 +132,10 @@ MQTT_USERNAME     = ""
 MQTT_PASSWORD     = ""
 
 # looking to get resultant topic like weather/ws-2902c/[item]
-MQTT_TOPIC_PREFIX = "home"
-MQTT_TOPIC           = MQTT_TOPIC_PREFIX + "/ws-3000"
+MQTT_TOPIC_PREFIX = "ws-3000/misol"
+MQTT_TOPIC           = MQTT_TOPIC_PREFIX + "/sensors"
 
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
@@ -180,7 +181,7 @@ client = mqtt.Client(client_id=MQTT_CLIENT_ID)
 if MQTT_USERNAME and MQTT_PASSWORD:
     client.username_pw_set(MQTT_USERNAME,MQTT_PASSWORD)
     print("Username and password set.")
-client.will_set(MQTT_TOPIC_PREFIX+"/status", payload="offline", qos=2, retain=True) # set LWT     
+client.will_set(MQTT_TOPIC_PREFIX+"/status", payload="Offline", qos=2, retain=True) # set LWT     
 client.on_connect = on_connect # on connect callback
 client.on_disconnect = on_disconnect # on disconnect callback
 
@@ -483,21 +484,28 @@ class WS3000():
         if hex_command == self.COMMANDS['sensor_values']:
             if len(buf) != 27:
                 raise Exception("Incorrect buffer length, failed to read " + self._get_cmd_name(hex_command))
+
             record['units'] = self.units
-            for ch in range(8):
-                idx = 1 + ch * 3
-                if buf[idx] != 0x7f and buf[idx + 1] != 0xff:
-                    # The formula below has been changed compared to the original code
-                    # to properly handle negative temperature values.
-                    # The station seems to provide the temperature as an unsigned short (2 bytes),
-                    # so struct.unpack is used for the conversion to decimal.
-                    # record['t_%s' % (ch + 1)] = (buf[idx] * 256 + buf[idx + 1]) / 10.0 # this doesn't handle negative values correctly
-                    if self.units == 'Fahrenheit':
-                        record[f'temperature_CH{ch + 1}'] = round((struct.unpack('>h', buf[idx:idx+2])[0] * 0.18) + 32, 2)
-                    else:
-                        record[f'temperature_CH{ch + 1}'] = struct.unpack('>h', buf[idx:idx+2])[0] / 10.0
-                if buf[idx + 2] != 0xff:
-                    record[f'humidity_CH{ch + 1}'] = buf[idx + 2]
+            ch = 1
+
+            for idx in range(1, len(buf) - 2, 3):
+                if list(buf[idx: idx + 3]) == [0x7f, 0xff, 0xff]:
+                    continue
+
+                sensordata = struct.unpack(">hB", bytes(buf[idx: idx + 3]))
+
+                ltempvalue = sensordata[0]
+                if (sensordata[1]) <= 100:
+                    record[f'humidity_CH{ch}'] = sensordata[1]
+
+                if self.units == 'Fahrenheit':
+                    record[f'temperature_CH{ch}'] = round(ltempvalue * 0.18 + 32, 2)
+
+                else:
+                    record[f'temperature_CH{ch}'] = ltempvalue / 10.0
+
+                ch += 1
+
         elif hex_command == self.COMMANDS['device_configuration']:
             if len(buf) != 30:
                 raise Exception("Incorrect buffer length, failed to read " + self._get_cmd_name(hex_command))
@@ -522,6 +530,11 @@ def publish_results(result):
         msg = str(result[key])
         logdbg(f"attempting to publish to {specific_topic} with message {msg}")
         publish(client, specific_topic, msg)
+
+def publish_LWT():
+    msg = 'Online'
+    specific_topic = MQTT_TOPIC_PREFIX + "/status"
+    client.publish(specific_topic, msg, qos=2, retain=True)
 
 def publish_HAdiscovery(data):
     # Publishing a set of auto discovery messages for Home Assistant
@@ -558,17 +571,12 @@ def publish_HAdiscovery(data):
         msg = json.dumps(payloadT) #convert to JSON
         logdbg(f"attempting to publish HA discovery for temperature sensor {ch}")
         #publish(client, specific_topic, msg, 0, True)
-        result = client.publish(specific_topic, msg, qos=0, retain=True)
+        client.publish(specific_topic, msg, qos=0, retain=True)
         specific_topic = f"homeassistant/sensor/hum_ch{ch}/config"
         msg = json.dumps(payloadH) #convert to JSON
         logdbg(f"attempting to publish HA discovery for humidity sensor {ch}")
         #publish(client, specific_topic, msg, 0, True)
-        result = client.publish(specific_topic, msg, qos=0, retain=True)
-
-        # make sensors available
-        msg = 'online'
-        specific_topic = payloadT['availability_topic']
-        result = client.publish(specific_topic, msg, qos=2, retain=True)
+        client.publish(specific_topic, msg, qos=0, retain=True)
 
 # *******************************************************************
 #
@@ -584,7 +592,7 @@ if __name__ == '__main__':
                         help='display driver version')
     parser.add_argument('--debug', action='store_true',
                         help='display diagnostic information while running')
-    parser.add_argument('--test', default='station',
+    parser.add_argument('--test', default='station', choices=['station', 'driver'],
                         help='what to test: station or driver')
     parser.add_argument('--interval', default=60,
                         help='set polling rate in seconds')
@@ -613,8 +621,8 @@ if __name__ == '__main__':
     if options.user and options.password:
         client.username_pw_set(options.user,options.password)
 
-#    if options.debug:
-#        syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
+    if options.debug:
+        log.setLevel(logging.DEBUG)
 
     # Driver mode only reads from USB and print to screen
     if options.test == 'driver':
@@ -638,7 +646,10 @@ if __name__ == '__main__':
             # Grab station configuration
             data = station.getDeviceConfig()
             # Send out HA MQTT discovery
-            publish_HAdiscovery(data)
+
+#            publish_HAdiscovery(data)
+            publish_LWT()
+
             # This runs forever with loop_interval delay
             for p in station.genLoopPackets():
                 publish_results(p)
