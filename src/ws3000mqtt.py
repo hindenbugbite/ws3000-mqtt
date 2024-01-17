@@ -492,7 +492,7 @@ class WS3000():
                 if list(buf[idx: idx + 3]) == [0x7f, 0xff, 0xff]:
                     continue
 
-                sensordata = struct.unpack(">hB", bytes(buf[idx: idx + 3]))
+                sensordata = struct.unpack(">hB", buf[idx: idx + 3])
 
                 ltempvalue = sensordata[0]
                 if (sensordata[1]) <= 100:
@@ -604,6 +604,8 @@ if __name__ == '__main__':
                         help='specify MQTT broker username, a password must also be used')
     parser.add_argument('--password', default=None,
                         help='specify MQTT broker password, cannot be empty')
+    parser.add_argument('--publish', default="hadiscovery", choices=['hadiscovery', 'lwt'],
+                        help='specify MQTT broker port')    
     options = parser.parse_args()
 
     if options.version:
@@ -647,8 +649,10 @@ if __name__ == '__main__':
             data = station.getDeviceConfig()
             # Send out HA MQTT discovery
 
-#            publish_HAdiscovery(data)
-            publish_LWT()
+            if options.publish == "hadiscovery":
+                publish_HAdiscovery(data)
+            else:
+                publish_LWT()
 
             # This runs forever with loop_interval delay
             for p in station.genLoopPackets():
