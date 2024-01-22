@@ -143,28 +143,23 @@ def logmsg(level, msg):
     # syslog.syslog(level, 'ws3000: %s' % msg)
     log.debug(msg)
 
-
 def logdbg(msg):
     # logmsg(syslog.LOG_DEBUG, msg)
     log.debug(msg)
-
 
 def loginf(msg):
     # logmsg(syslog.LOG_INFO, msg)
     log.info(msg)
 
-
 def logerr(msg):
     # logmsg(syslog.LOG_ERR, msg)
     log.error(msg)
-
 
 def tohex(buf):
     """Helper function used to print a byte array in hex format"""
     if buf:
         return "%s (len=%s)" % (' '.join(["%02x" % x for x in buf]), len(buf))
     return ''
-
 
 # mostly copied + pasted from https://www.emqx.io/blog/how-to-use-mqtt-in-python and some of my own MQTT scripts
 def on_connect(client, userdata, flags, rc):
@@ -398,12 +393,6 @@ class WS3000():
                     self.units = 'Fahrenheit'
                 else:
                     self.units = 'Celsius'
-            # Read one set of current values
-            command = self.COMMANDS["sensor_values"]
-            raw = self._get_raw_data(command)
-            data2 = self._raw_to_data(raw, command)
-            # Try to determine the number of sensors available
-            data['sensorNum'] = int((len(data2) - 1)/2)
             return data
         except (usb.USBError, Exception) as e:
             exc_traceback = traceback.format_exc()
@@ -413,7 +402,7 @@ class WS3000():
     @property
     def hardware_name(self):
         return self.model
-        
+
     # ===============================================================================
     #                         USB functions
     # ===============================================================================
@@ -450,7 +439,8 @@ class WS3000():
         if idx is None:
             logdbg('read: no terminating bytes in buffer: %s' % tohex(buf))
             return None
-        return buf[0: idx + 2]
+
+        return buf[1: idx]
 
     # =========================================================================
     # LOOP packet related functions
@@ -482,32 +472,26 @@ class WS3000():
         if not buf:
             return record
         if hex_command == self.COMMANDS['sensor_values']:
-            if len(buf) != 27:
+            if len(buf) != 24:
                 raise Exception("Incorrect buffer length, failed to read " + self._get_cmd_name(hex_command))
 
             record['units'] = self.units
-            ch = 1
 
-            for idx in range(1, len(buf) - 2, 3):
+            for ch, idx in enumerate(range(0, len(buf), 3), 1):
                 if list(buf[idx: idx + 3]) == [0x7f, 0xff, 0xff]:
                     continue
 
                 sensordata = struct.unpack(">hB", buf[idx: idx + 3])
 
-                ltempvalue = sensordata[0]
+                record[f'temperature_CH{ch}'] = sensordata[0] / 10.0
                 if (sensordata[1]) <= 100:
                     record[f'humidity_CH{ch}'] = sensordata[1]
 
                 if self.units == 'Fahrenheit':
-                    record[f'temperature_CH{ch}'] = round(ltempvalue * 0.18 + 32, 2)
-
-                else:
-                    record[f'temperature_CH{ch}'] = ltempvalue / 10.0
-
-                ch += 1
+                    record[f'temperature_CH{ch}'] = record[f'temperature_CH{ch}'] * 1.8 + 32
 
         elif hex_command == self.COMMANDS['device_configuration']:
-            if len(buf) != 30:
+            if len(buf) != 27:
                 raise Exception("Incorrect buffer length, failed to read " + self._get_cmd_name(hex_command))
             record['type'] = self._get_cmd_name(hex_command)
             if buf[7] == 1:
@@ -536,12 +520,17 @@ def publish_LWT():
     specific_topic = MQTT_TOPIC_PREFIX + "/status"
     client.publish(specific_topic, msg, qos=2, retain=True)
 
-def publish_HAdiscovery(data):
+def publish_HAdiscovery(_c, data):
     # Publishing a set of auto discovery messages for Home Assistant
     # base on information from: https://stevessmarthomeguide.com/adding-an-mqtt-device-to-home-assistant/
     # total number of sensors are passed in from ws-3000 getDeviceConfig function along with temperature units
-    
-    totalSensors = data['sensorNum']
+
+    # Read one set of current values
+    command = _c.COMMANDS["sensor_values"]
+    raw = _c._get_raw_data(command)
+    data2 = _c._raw_to_data(raw, command)
+    # Try to determine the number of sensors available
+    totalSensors = int((len(data2) - 1)/2)
 
     # we're just going to publish a HA discovery message for each available sensor.
     # The state_topic needs to be the same as what is published
@@ -578,6 +567,8 @@ def publish_HAdiscovery(data):
         #publish(client, specific_topic, msg, 0, True)
         client.publish(specific_topic, msg, qos=0, retain=True)
 
+    publish_LWT()
+
 # *******************************************************************
 #
 # define a main entry point for basic testing of the station.
@@ -613,13 +604,13 @@ if __name__ == '__main__':
         exit(1)
     
     poll_interval = options.interval
-    
+
     if options.host:
         MQTT_BROKER_HOST = options.host
-    
+
     if options.port:
         MQTT_BROKER_PORT = options.port
-    
+
     if options.user and options.password:
         client.username_pw_set(options.user,options.password)
 
@@ -650,7 +641,8 @@ if __name__ == '__main__':
             # Send out HA MQTT discovery
 
             if options.publish == "hadiscovery":
-                publish_HAdiscovery(data)
+                publish_HAdiscovery(client, data)
+
             else:
                 publish_LWT()
 
