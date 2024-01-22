@@ -480,8 +480,8 @@ class WS3000():
             for ch, idx in enumerate(range(0, len(buf), 3), 1):
                 if list(buf[idx: idx + 3]) == [0x7f, 0xff, 0xff]:
                     continue
-
                 sensordata = struct.unpack(">hB", buf[idx: idx + 3])
+
 
                 record[f'temperature_CH{ch}'] = sensordata[0] / 10.0
                 if (sensordata[1]) <= 100:
