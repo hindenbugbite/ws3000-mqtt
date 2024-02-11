@@ -121,6 +121,8 @@ import struct
 import json
 import usb
 import paho.mqtt.client as mqtt
+import datetime
+import threading
 
 DRIVER_VERSION = "0.2"
 
@@ -132,9 +134,10 @@ MQTT_USERNAME     = ""
 MQTT_PASSWORD     = ""
 
 # looking to get resultant topic like weather/ws-2902c/[item]
-MQTT_TOPIC_PREFIX = "home"
-MQTT_TOPIC           = MQTT_TOPIC_PREFIX + "/ws-3000"
+MQTT_TOPIC_PREFIX = "ws-3000/misol"
+MQTT_TOPIC           = MQTT_TOPIC_PREFIX + "/sensors"
 
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
@@ -142,28 +145,23 @@ def logmsg(level, msg):
     # syslog.syslog(level, 'ws3000: %s' % msg)
     log.debug(msg)
 
-
 def logdbg(msg):
     # logmsg(syslog.LOG_DEBUG, msg)
     log.debug(msg)
-
 
 def loginf(msg):
     # logmsg(syslog.LOG_INFO, msg)
     log.info(msg)
 
-
 def logerr(msg):
     # logmsg(syslog.LOG_ERR, msg)
     log.error(msg)
-
 
 def tohex(buf):
     """Helper function used to print a byte array in hex format"""
     if buf:
         return "%s (len=%s)" % (' '.join(["%02x" % x for x in buf]), len(buf))
     return ''
-
 
 # mostly copied + pasted from https://www.emqx.io/blog/how-to-use-mqtt-in-python and some of my own MQTT scripts
 def on_connect(client, userdata, flags, rc):
@@ -174,15 +172,6 @@ def on_connect(client, userdata, flags, rc):
 
 def on_disconnect(client, userdata, rc):
     loginf("disconnected from MQTT broker")
-
-# set up mqtt client
-client = mqtt.Client(client_id=MQTT_CLIENT_ID)
-if MQTT_USERNAME and MQTT_PASSWORD:
-    client.username_pw_set(MQTT_USERNAME,MQTT_PASSWORD)
-    print("Username and password set.")
-client.will_set(MQTT_TOPIC_PREFIX+"/status", payload="offline", qos=2, retain=True) # set LWT     
-client.on_connect = on_connect # on connect callback
-client.on_disconnect = on_disconnect # on disconnect callback
 
 def publish(client, topic, msg):
     result = client.publish(topic, msg)
@@ -206,7 +195,8 @@ class WS3000():
         'unknown': 0x06,
         'temp_alarm_configuration': 0x08,
         'humidity_alarm_configuration': 0x09,
-        'device_configuration': 0x04
+        'device_configuration': 0x04,
+        'synctime': 0x30,
     }
 
     def __init__(self, **stn_dict):
@@ -268,6 +258,8 @@ class WS3000():
         self.device = None
         self.units = 'Celsius'
         self.open_port()
+
+        self.lock = threading.Lock()
 
     def open_port(self):
         """Establish a connection to the WS3000"""
@@ -338,38 +330,40 @@ class WS3000():
             except usb.USBError:
                 pass
 
+    """
+    Function that only returns the current sensors data.
+    Should be used by a data service that will add temperature data to an existing packet, for
+    example, since a single measurement would be required in such a case.
+    """
     def get_current_values(self):
-        """Function that only returns the current sensors data.
-        Should be used by a data service that will add temperature data to an existing packet, for
-        example, since a single measurement would be required in such a case."""
-
-        nberrors = 0
-        while nberrors < self.max_tries:
-            # Get a stream of raw packets, then convert them
-            try:
-                read_sensors_command = self.COMMANDS['sensor_values']
-                raw_data = self._get_raw_data(read_sensors_command)
-                #
-                if not raw_data:  # empty record
-                    raise Exception("Failed to get any data from the station")
-                formatted_data = self._raw_to_data(raw_data, read_sensors_command)
-                logdbg('data: %s' % formatted_data)
-                #new_packet = self._data_to_wxpacket(formatted_data)
-                #logdbg('packet: %s' % new_packet)
-                #return new_packet
-                return formatted_data
-            except (usb.USBError, Exception) as e:
-                exc_traceback = traceback.format_exc()
-                logerr("WS-3000: An error occurred while generating loop packets")
-                logerr(exc_traceback)
-                nberrors += 1
-                # The driver seem to 'loose' connectivity with the station from time to time.
-                # Trying to close/reopen the USB port to fix the problem.
-                self.closePort()
-                self.open_port()
-                time.sleep(self.wait_before_retry)
-        logerr("Max retries exceeded while fetching USB reports")
-        traceback.print_exc(file=sys.stdout)
+        with self.lock:
+            nberrors = 0
+            while nberrors < self.max_tries:
+                # Get a stream of raw packets, then convert them
+                try:
+                    read_sensors_command = self.COMMANDS['sensor_values']
+                    raw_data = self._get_raw_data(read_sensors_command)
+                    #
+                    if not raw_data:  # empty record
+                        raise Exception("Failed to get any data from the station")
+                    formatted_data = self._raw_to_data(raw_data, read_sensors_command)
+                    logdbg('data: %s' % formatted_data)
+                    #new_packet = self._data_to_wxpacket(formatted_data)
+                    #logdbg('packet: %s' % new_packet)
+                    #return new_packet
+                    return formatted_data
+                except (usb.USBError, Exception) as e:
+                    exc_traceback = traceback.format_exc()
+                    logerr("WS-3000: An error occurred while generating loop packets")
+                    logerr(exc_traceback)
+                    nberrors += 1
+                    # The driver seem to 'loose' connectivity with the station from time to time.
+                    # Trying to close/reopen the USB port to fix the problem.
+                    self.closePort()
+                    self.open_port()
+                    time.sleep(self.wait_before_retry)
+            logerr("Max retries exceeded while fetching USB reports")
+            traceback.print_exc(file=sys.stdout)
 
     def genLoopPackets(self):
         """Generator function that continuously returns loop packets"""
@@ -381,38 +375,66 @@ class WS3000():
         except GeneratorExit:
             pass
 
+    """
+    Send command to read the station configuration
+    Two pieces of information are saved: the units the station is set to,
+    and try to determine the number of sensors attached which will go on
+    to help set the number of HA discovery messages to send
+    """
     def getDeviceConfig(self):
-        """Send command to read the station configuration
-        Two pieces of information are saved: the units the station is set to,
-        and try to determine the number of sensors attached which will go on
-        to help set the number of HA discovery messages to send"""
-        try:
-            # Read the station config
-            command = self.COMMANDS["device_configuration"]
-            raw = self._get_raw_data(command)
-            data = self._raw_to_data(raw, command)
-            # Save the units for later use
-            if data['type'] == 'device_configuration':
-                if data['units'] == 'F':
-                    self.units = 'Fahrenheit'
-                else:
-                    self.units = 'Celsius'
-            # Read one set of current values
-            command = self.COMMANDS["sensor_values"]
-            raw = self._get_raw_data(command)
-            data2 = self._raw_to_data(raw, command)
-            # Try to determine the number of sensors available
-            data['sensorNum'] = int((len(data2) - 1)/2)
-            return data
-        except (usb.USBError, Exception) as e:
-            exc_traceback = traceback.format_exc()
-            logerr("WS-3000: An error occurred while generating loop packets")
-            logerr(exc_traceback)
+        with self.lock:
+            try:
+                # Read the station config
+                command = self.COMMANDS["device_configuration"]
+                raw = self._get_raw_data(command)
+                data = self._raw_to_data(raw, command)
+                # Save the units for later use
+                if data['type'] == 'device_configuration':
+                    if data['units'] == 'F':
+                        self.units = 'Fahrenheit'
+                    else:
+                        self.units = 'Celsius'
+                return data
+            except (usb.USBError, Exception) as e:
+                exc_traceback = traceback.format_exc()
+                logerr("WS-3000: An error occurred while generating loop packets")
+                logerr(exc_traceback)
+
+    def synTime(self):
+        # sync time command (0x30)
+        # 00 7b
+        # 01 30
+        # 02 07 year MSB
+        # 03 e0 year LSB
+        # 04 0c month
+        # 05 11 day-of-month
+        # 06 00 hour
+        # 07 27 minute
+        # 08 0c second
+        # 09 06 timezone
+        # 0a 40
+        # 0b 7d
+        with self.lock:
+            lnow = datetime.datetime.now()
+            ltimezone = int(lnow.astimezone().utcoffset().total_seconds() / 3600)
+            lnowtuple = lnow.timetuple()
+            lpackedtime = list(struct.pack('>hBBBBBB', lnowtuple[0], lnowtuple[1], lnowtuple[2], lnowtuple[3], lnowtuple[4], lnowtuple[5], ltimezone))
+            sequence = [0x7b, self.COMMANDS['synctime']] + lpackedtime + [0x40, 0x7d]
+
+            try:
+                logdbg("sending request for 'synctime'")
+                self._write_usb(sequence)
+
+            except Exception:
+                exc_traceback = traceback.format_exc()
+                logerr("WS-3000: An error occurred while fetching data")
+                logerr(exc_traceback)
+                traceback.print_exc(file=sys.stdout)
 
     @property
     def hardware_name(self):
         return self.model
-        
+
     # ===============================================================================
     #                         USB functions
     # ===============================================================================
@@ -449,7 +471,8 @@ class WS3000():
         if idx is None:
             logdbg('read: no terminating bytes in buffer: %s' % tohex(buf))
             return None
-        return buf[0: idx + 2]
+
+        return buf[1: idx]
 
     # =========================================================================
     # LOOP packet related functions
@@ -481,25 +504,26 @@ class WS3000():
         if not buf:
             return record
         if hex_command == self.COMMANDS['sensor_values']:
-            if len(buf) != 27:
+            if len(buf) != 24:
                 raise Exception("Incorrect buffer length, failed to read " + self._get_cmd_name(hex_command))
+
             record['units'] = self.units
-            for ch in range(8):
-                idx = 1 + ch * 3
-                if buf[idx] != 0x7f and buf[idx + 1] != 0xff:
-                    # The formula below has been changed compared to the original code
-                    # to properly handle negative temperature values.
-                    # The station seems to provide the temperature as an unsigned short (2 bytes),
-                    # so struct.unpack is used for the conversion to decimal.
-                    # record['t_%s' % (ch + 1)] = (buf[idx] * 256 + buf[idx + 1]) / 10.0 # this doesn't handle negative values correctly
-                    if self.units == 'Fahrenheit':
-                        record[f'temperature_CH{ch + 1}'] = round((struct.unpack('>h', buf[idx:idx+2])[0] * 0.18) + 32, 2)
-                    else:
-                        record[f'temperature_CH{ch + 1}'] = struct.unpack('>h', buf[idx:idx+2])[0] / 10.0
-                if buf[idx + 2] != 0xff:
-                    record[f'humidity_CH{ch + 1}'] = buf[idx + 2]
+
+            for ch, idx in enumerate(range(0, len(buf), 3), 1):
+                if list(buf[idx: idx + 3]) == [0x7f, 0xff, 0xff]:
+                    continue
+                sensordata = struct.unpack(">hB", buf[idx: idx + 3])
+
+
+                record[f'temperature_CH{ch}'] = sensordata[0] / 10.0
+                if (sensordata[1]) <= 100:
+                    record[f'humidity_CH{ch}'] = sensordata[1]
+
+                if self.units == 'Fahrenheit':
+                    record[f'temperature_CH{ch}'] = record[f'temperature_CH{ch}'] * 1.8 + 32
+
         elif hex_command == self.COMMANDS['device_configuration']:
-            if len(buf) != 30:
+            if len(buf) != 27:
                 raise Exception("Incorrect buffer length, failed to read " + self._get_cmd_name(hex_command))
             record['type'] = self._get_cmd_name(hex_command)
             if buf[7] == 1:
@@ -523,12 +547,22 @@ def publish_results(result):
         logdbg(f"attempting to publish to {specific_topic} with message {msg}")
         publish(client, specific_topic, msg)
 
-def publish_HAdiscovery(data):
+def publish_LWT():
+    msg = 'Online'
+    specific_topic = MQTT_TOPIC_PREFIX + "/status"
+    client.publish(specific_topic, msg, qos=2, retain=True)
+
+def publish_HAdiscovery(_c, data):
     # Publishing a set of auto discovery messages for Home Assistant
     # base on information from: https://stevessmarthomeguide.com/adding-an-mqtt-device-to-home-assistant/
     # total number of sensors are passed in from ws-3000 getDeviceConfig function along with temperature units
-    
-    totalSensors = data['sensorNum']
+
+    # Read one set of current values
+    command = _c.COMMANDS["sensor_values"]
+    raw = _c._get_raw_data(command)
+    data2 = _c._raw_to_data(raw, command)
+    # Try to determine the number of sensors available
+    totalSensors = int((len(data2) - 1)/2)
 
     # we're just going to publish a HA discovery message for each available sensor.
     # The state_topic needs to be the same as what is published
@@ -558,17 +592,28 @@ def publish_HAdiscovery(data):
         msg = json.dumps(payloadT) #convert to JSON
         logdbg(f"attempting to publish HA discovery for temperature sensor {ch}")
         #publish(client, specific_topic, msg, 0, True)
-        result = client.publish(specific_topic, msg, qos=0, retain=True)
+        client.publish(specific_topic, msg, qos=0, retain=True)
         specific_topic = f"homeassistant/sensor/hum_ch{ch}/config"
         msg = json.dumps(payloadH) #convert to JSON
         logdbg(f"attempting to publish HA discovery for humidity sensor {ch}")
         #publish(client, specific_topic, msg, 0, True)
-        result = client.publish(specific_topic, msg, qos=0, retain=True)
+        client.publish(specific_topic, msg, qos=0, retain=True)
 
-        # make sensors available
-        msg = 'online'
-        specific_topic = payloadT['availability_topic']
-        result = client.publish(specific_topic, msg, qos=2, retain=True)
+    publish_LWT()
+
+
+def syncTimeFn(_station):
+    while True:
+        lcurtime = datetime.datetime.now()
+        lnextwakeup = lcurtime + datetime.timedelta(hours=12)
+
+        try:
+            _station.syncTime()
+            
+        except:
+            pass
+
+        time.sleep((lnextwakeup - datetime.datetime.now()).seconds)
 
 # *******************************************************************
 #
@@ -584,7 +629,7 @@ if __name__ == '__main__':
                         help='display driver version')
     parser.add_argument('--debug', action='store_true',
                         help='display diagnostic information while running')
-    parser.add_argument('--test', default='station',
+    parser.add_argument('--test', default='station', choices=['station', 'driver'],
                         help='what to test: station or driver')
     parser.add_argument('--interval', default=60,
                         help='set polling rate in seconds')
@@ -596,6 +641,10 @@ if __name__ == '__main__':
                         help='specify MQTT broker username, a password must also be used')
     parser.add_argument('--password', default=None,
                         help='specify MQTT broker password, cannot be empty')
+    parser.add_argument('--publish', default="hadiscovery", choices=['hadiscovery', 'lwt'],
+                        help='specify MQTT broker port')    
+    parser.add_argument('--synctime', action='store_true', 
+                        help='sync time with methestation')    
     options = parser.parse_args()
 
     if options.version:
@@ -603,34 +652,47 @@ if __name__ == '__main__':
         exit(1)
     
     poll_interval = options.interval
-    
+
     if options.host:
         MQTT_BROKER_HOST = options.host
-    
+
     if options.port:
         MQTT_BROKER_PORT = options.port
-    
-    if options.user and options.password:
-        client.username_pw_set(options.user,options.password)
 
-#    if options.debug:
-#        syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
+    if options.debug:
+        log.setLevel(logging.DEBUG)
+
+    station = WS3000(loop_interval=poll_interval,mode=os)
+
+    if options.synctime:
+        synctimethread = threading.Thread(target=syncTimeFn, args = (station, ), daemon=True)
+        synctimethread.start()
 
     # Driver mode only reads from USB and print to screen
     if options.test == 'driver':
-        driver = WS3000(loop_interval=poll_interval,mode=os)
         try:
             # Grab station configuration
-            data = driver.getDeviceConfig()
+            data = station.getDeviceConfig()
             print('data: %s' % data)
             # This runs forever with loop_interval delay
-            for p in driver.genLoopPackets():
+            for p in station.genLoopPackets():
                 print(p)
         finally:
-            driver.closePort()
+            station.closePort()
     # Any other mode will start MQTT client
     else:
-        station = WS3000(loop_interval=poll_interval,mode=os)
+        # set up mqtt client
+        client = mqtt.Client(client_id=MQTT_CLIENT_ID)
+        if MQTT_USERNAME and MQTT_PASSWORD:
+            client.username_pw_set(MQTT_USERNAME,MQTT_PASSWORD)
+            print("Username and password set.")
+        client.will_set(MQTT_TOPIC_PREFIX+"/status", payload="Offline", qos=2, retain=True) # set LWT     
+        client.on_connect = on_connect # on connect callback
+        client.on_disconnect = on_disconnect # on disconnect callback
+
+        if options.user and options.password:
+            client.username_pw_set(options.user,options.password)
+
         try:
             # connect to MQTT broker
             client.connect(MQTT_BROKER_HOST, port=MQTT_BROKER_PORT)
@@ -638,11 +700,16 @@ if __name__ == '__main__':
             # Grab station configuration
             data = station.getDeviceConfig()
             # Send out HA MQTT discovery
-            publish_HAdiscovery(data)
+
+            if options.publish == "hadiscovery":
+                publish_HAdiscovery(client, data)
+
+            else:
+                publish_LWT()
+
             # This runs forever with loop_interval delay
             for p in station.genLoopPackets():
                 publish_results(p)
         finally:
             station.closePort()
             client.disconnect()
-
