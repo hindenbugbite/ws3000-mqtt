@@ -167,6 +167,8 @@ def tohex(buf):
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         loginf(f"connected to MQTT broker at {MQTT_BROKER_HOST}")
+        client.publish(MQTT_TOPIC_PREFIX + "/status", 'Online', qos=2, retain=True)
+
     else:
         logerr("Failed to connect, return code %d\n", rc)
 
@@ -369,9 +371,14 @@ class WS3000():
         """Generator function that continuously returns loop packets"""
         try:
             while True:
+                lstart = time.time()
                 loop_packet = self.get_current_values()
+ 
                 yield loop_packet
-                time.sleep(self.loop_interval)
+                lduration = time.time() - lstart
+ 
+                time.sleep(self.loop_interval - lduration)
+
         except GeneratorExit:
             pass
 
@@ -512,8 +519,8 @@ class WS3000():
             for ch, idx in enumerate(range(0, len(buf), 3), 1):
                 if list(buf[idx: idx + 3]) == [0x7f, 0xff, 0xff]:
                     continue
-                sensordata = struct.unpack(">hB", buf[idx: idx + 3])
 
+                sensordata = struct.unpack(">hB", buf[idx: idx + 3])
 
                 record[f'temperature_CH{ch}'] = sensordata[0] / 10.0
                 if (sensordata[1]) <= 100:
@@ -546,11 +553,6 @@ def publish_results(result):
         msg = str(result[key])
         logdbg(f"attempting to publish to {specific_topic} with message {msg}")
         publish(client, specific_topic, msg)
-
-def publish_LWT():
-    msg = 'Online'
-    specific_topic = MQTT_TOPIC_PREFIX + "/status"
-    client.publish(specific_topic, msg, qos=2, retain=True)
 
 def publish_HAdiscovery(_c, data):
     # Publishing a set of auto discovery messages for Home Assistant
@@ -599,9 +601,6 @@ def publish_HAdiscovery(_c, data):
         #publish(client, specific_topic, msg, 0, True)
         client.publish(specific_topic, msg, qos=0, retain=True)
 
-    publish_LWT()
-
-
 def syncTimeFn(_station):
     while True:
         lcurtime = datetime.datetime.now()
@@ -609,7 +608,7 @@ def syncTimeFn(_station):
 
         try:
             _station.syncTime()
-            
+
         except:
             pass
 
@@ -704,12 +703,9 @@ if __name__ == '__main__':
             if options.publish == "hadiscovery":
                 publish_HAdiscovery(client, data)
 
-            else:
-                publish_LWT()
-
             # This runs forever with loop_interval delay
             for p in station.genLoopPackets():
                 publish_results(p)
+
         finally:
             station.closePort()
-            client.disconnect()
